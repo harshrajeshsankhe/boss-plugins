@@ -17,8 +17,25 @@ class GoogleSheetsAdapter {
     fun isInstalled(): Boolean =
         run("gws", "--version", timeoutSec = 10).success
 
-    fun isAuthenticated(): Boolean =
-        run("gws", "auth", "status", timeoutSec = 15).success
+    fun isAuthenticated(): Boolean {
+        val result = run("gws", "auth", "status", timeoutSec = 15)
+        return result.success && isAuthenticatedStatus(result.output)
+    }
+
+    internal fun isAuthenticatedStatus(output: String): Boolean {
+        val authMethodNone =
+            Regex("""\"auth_method\"\s*:\s*\"none\"""").containsMatchIn(output)
+
+        val credentialSourceNone =
+            Regex("""\"credential_source\"\s*:\s*\"none\"""").containsMatchIn(output)
+
+        val credentialExists =
+            Regex("""\"encrypted_credentials_exists\"\s*:\s*true""").containsMatchIn(output) ||
+                Regex("""\"plain_credentials_exists\"\s*:\s*true""").containsMatchIn(output) ||
+                Regex("""\"token_cache_exists\"\s*:\s*true""").containsMatchIn(output)
+
+        return !authMethodNone && !credentialSourceNone && credentialExists
+    }
 
     fun readValues(
         spreadsheetId: String,
