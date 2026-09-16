@@ -9,7 +9,7 @@
   "type": "panel",
   "description": "Unified catalogue and governed access layer for external service connections and version-pinned skills, starting with GitHub and Google Sheets.",
   "author": "TechTribe",
-  "url": "https://github.com/risa-labs-inc/boss-plugin-connections-skills",
+  "url": "https://github.com/risa-labs-inc/boss-plugins/tree/main/connections-skills",
   "isolationMode": "out-of-process",
   "fallback": "in-process"
 }
