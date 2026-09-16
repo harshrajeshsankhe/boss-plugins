@@ -8,6 +8,8 @@ class ConnectionsSkillsMcpTools(
     private val registry: ConnectionRegistry,
 ) : McpToolProvider {
 
+    private val googleSheets = GoogleSheetsAdapter()
+
     override val providerId = "connections-skills"
 
     override fun tools(): List<McpToolDefinition> =
@@ -63,6 +65,50 @@ class ConnectionsSkillsMcpTools(
             ),
 
             McpToolDefinition.withRbac(
+                name = "mcp__ai_rever_boss_plugin_dynamic_connectionskills__google_sheets_status",
+                description =
+                    "Check the Google Workspace CLI installation and authentication state for Google Sheets.",
+                handler = { _ -> googleSheetsStatus() },
+                inputSchema = """{"type":"object","properties":{}}""",
+                readOnly = true,
+                requiredPermissions = listOf("connections.read"),
+            ),
+
+            McpToolDefinition.withRbac(
+                name = "mcp__ai_rever_boss_plugin_dynamic_connectionskills__google_sheets_read",
+                description =
+                    "Read values from a Google Sheet using spreadsheet ID and A1 notation.",
+                handler = { args ->
+                    googleSheetsRead(
+                        spreadsheetId = args.string("spreadsheetId"),
+                        range = args.string("range"),
+                    )
+                },
+                inputSchema =
+                    """{"type":"object","properties":{"spreadsheetId":{"type":"string"},"range":{"type":"string"}},"required":["spreadsheetId","range"]}""",
+                readOnly = true,
+                requiredPermissions = listOf("connections.read"),
+            ),
+
+            McpToolDefinition.withRbac(
+                name = "mcp__ai_rever_boss_plugin_dynamic_connectionskills__google_sheets_write",
+                description =
+                    "Write a JSON ValueRange to a Google Sheet using RAW or USER_ENTERED input.",
+                handler = { args ->
+                    googleSheetsWrite(
+                        spreadsheetId = args.string("spreadsheetId"),
+                        range = args.string("range"),
+                        valuesJson = args.string("valuesJson"),
+                        valueInputOption = args.string("valueInputOption") ?: "USER_ENTERED",
+                    )
+                },
+                inputSchema =
+                    """{"type":"object","properties":{"spreadsheetId":{"type":"string"},"range":{"type":"string"},"valuesJson":{"type":"string","description":"JSON ValueRange body, for example {"values":[["Name","Score"],["Harsh",100]]}"},"valueInputOption":{"type":"string","enum":["RAW","USER_ENTERED"]}},"required":["spreadsheetId","range","valuesJson"]}""",
+                readOnly = false,
+                requiredPermissions = listOf("connections.write"),
+            ),
+
+            McpToolDefinition.withRbac(
                 name = "mcp__ai_rever_boss_plugin_dynamic_connectionskills__disconnect",
                 description =
                     "Disable a connection so connector operations are rejected until it is explicitly reconnected.",
@@ -75,6 +121,102 @@ class ConnectionsSkillsMcpTools(
                 requiredPermissions = listOf("connections.write"),
             ),
         )
+
+    private fun googleSheetsStatus(): McpToolResult {
+        val status = registry.status(ConnectionProvider.GOOGLE_SHEETS)
+
+        val authStatus = if (googleSheets.isInstalled()) {
+            googleSheets.isAuthenticated()
+        } else {
+            false
+        }
+
+        val message = when {
+            !googleSheets.isInstalled() ->
+                "Google Workspace CLI (gws) is not installed."
+
+            !authStatus ->
+                "gws is installed but Google authentication is not configured."
+
+            status.state == ConnectionState.DISCONNECTED ->
+                "Google Sheets connection is explicitly disconnected."
+
+            else ->
+                "Google Workspace CLI is installed and authenticated."
+        }
+
+        val state = when {
+            !googleSheets.isInstalled() -> ConnectionState.MISSING_DEPENDENCY
+            status.state == ConnectionState.DISCONNECTED -> ConnectionState.DISCONNECTED
+            !authStatus -> ConnectionState.NOT_AUTHENTICATED
+            else -> ConnectionState.CONNECTED
+        }
+
+        return McpToolResult(
+            """{"provider":"google-sheets","displayName":"Google Sheets","state":"${state.name.lowercase()}","message":"${escape(message)}"}""",
+            state == ConnectionState.ERROR,
+        )
+    }
+
+    private fun googleSheetsRead(
+        spreadsheetId: String?,
+        range: String?,
+    ): McpToolResult {
+        if (!registry.isConnected(ConnectionProvider.GOOGLE_SHEETS)) {
+            return McpToolResult(
+                "Google Sheets connection is not active. Connect Google Sheets before using this tool.",
+                true,
+            )
+        }
+
+        if (spreadsheetId.isNullOrBlank() || range.isNullOrBlank()) {
+            return McpToolResult("spreadsheetId and range are required.", true)
+        }
+
+        val result = googleSheets.readValues(spreadsheetId, range)
+
+        return McpToolResult(
+            result.output.ifBlank { "gws returned no output." },
+            !result.success,
+        )
+    }
+
+    private fun googleSheetsWrite(
+        spreadsheetId: String?,
+        range: String?,
+        valuesJson: String?,
+        valueInputOption: String,
+    ): McpToolResult {
+        if (!registry.isConnected(ConnectionProvider.GOOGLE_SHEETS)) {
+            return McpToolResult(
+                "Google Sheets connection is not active. Connect Google Sheets before using this tool.",
+                true,
+            )
+        }
+
+        if (
+            spreadsheetId.isNullOrBlank() ||
+            range.isNullOrBlank() ||
+            valuesJson.isNullOrBlank()
+        ) {
+            return McpToolResult(
+                "spreadsheetId, range, and valuesJson are required.",
+                true,
+            )
+        }
+
+        val result = googleSheets.writeValues(
+            spreadsheetId,
+            range,
+            valuesJson,
+            valueInputOption,
+        )
+
+        return McpToolResult(
+            result.output.ifBlank { "gws returned no output." },
+            !result.success,
+        )
+    }
 
     private fun provider(value: String?): ConnectionProvider? =
         ConnectionProvider.entries.firstOrNull {
