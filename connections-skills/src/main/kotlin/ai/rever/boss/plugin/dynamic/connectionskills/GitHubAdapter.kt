@@ -1,6 +1,5 @@
 package ai.rever.boss.plugin.dynamic.connectionskills
 
-import java.io.File
 import java.util.concurrent.TimeUnit
 
 class GitHubAdapter {
@@ -22,6 +21,7 @@ class GitHubAdapter {
 
     fun listRepositories(limit: Int): Result {
         val safeLimit = limit.coerceIn(1, 100)
+
         return run(
             "gh",
             "repo",
@@ -40,11 +40,17 @@ class GitHubAdapter {
         body: String,
     ): Result {
         if (!isValidRepository(repository)) {
-            return Result(2, "Invalid repository. Expected owner/name.")
+            return Result(
+                2,
+                "Invalid repository. Expected owner/name.",
+            )
         }
 
         if (title.isBlank()) {
-            return Result(2, "Issue title must not be blank.")
+            return Result(
+                2,
+                "Issue title must not be blank.",
+            )
         }
 
         return run(
@@ -67,29 +73,61 @@ class GitHubAdapter {
     private fun run(
         vararg cmd: String,
         timeoutSec: Long,
-    ): Result = try {
-        val process = ProcessBuilder(*cmd)
-            .redirectErrorStream(true)
-            .apply {
-                environment()["GH_PAGER"] = "cat"
-                environment()["PAGER"] = "cat"
+    ): Result =
+        try {
+            val process =
+                ProcessBuilder(*cmd)
+                    .redirectErrorStream(true)
+                    .apply {
+                        environment()["GH_PAGER"] = "cat"
+                        environment()["PAGER"] = "cat"
+                    }
+                    .start()
+
+            process.outputStream.close()
+
+            val output = StringBuilder()
+            val reader = process.inputStream.bufferedReader()
+
+            val readerThread =
+                Thread {
+                    reader.useLines { lines ->
+                        lines.forEach { line ->
+                            synchronized(output) {
+                                if (output.length < 200_000) {
+                                    output.append(line).append('\n')
+                                }
+                            }
+                        }
+                    }
+                }
+
+            readerThread.isDaemon = true
+            readerThread.start()
+
+            if (!process.waitFor(timeoutSec, TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+                readerThread.join(1_000)
+
+                return Result(
+                    exitCode = -1,
+                    output = "GitHub CLI timed out after ${timeoutSec}s.",
+                    timedOut = true,
+                )
             }
-            .start()
 
-        process.outputStream.close()
+            readerThread.join(1_000)
 
-        val output = process.inputStream
-            .bufferedReader()
-            .use { it.readText() }
-            .trim()
-
-        if (!process.waitFor(timeoutSec, TimeUnit.SECONDS)) {
-            process.destroyForcibly()
-            Result(-1, "GitHub CLI timed out after ${timeoutSec}s.", timedOut = true)
-        } else {
-            Result(process.exitValue(), output)
+            Result(
+                exitCode = process.exitValue(),
+                output = synchronized(output) {
+                    output.toString().trim()
+                },
+            )
+        } catch (e: Exception) {
+            Result(
+                exitCode = -1,
+                output = e.message ?: e.javaClass.simpleName,
+            )
         }
-    } catch (e: Exception) {
-        Result(-1, e.message ?: e.javaClass.simpleName)
-    }
 }

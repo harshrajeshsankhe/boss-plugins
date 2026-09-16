@@ -18,31 +18,157 @@ class ConnectionRegistry(
     private val storage = context.pluginStorageFactory?.createStorage("connections")
     private val states = ConcurrentHashMap<ConnectionProvider, ConnectionState>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     private val github = GitHubAdapter()
+    private val googleSheets = GoogleSheetsAdapter()
 
     private val _statuses =
-        MutableStateFlow(ConnectionProvider.entries.map { status(it) })
+        MutableStateFlow(
+            ConnectionProvider.entries.map { initialStatus(it) },
+        )
 
     val statuses: StateFlow<List<ConnectionStatus>> =
         _statuses.asStateFlow()
 
     init {
         scope.launch {
-            for (provider in ConnectionProvider.entries) {
-                val saved = storage?.getString(key(provider), null)
-
-                states[provider] = saved?.let {
-                    runCatching {
-                        ConnectionState.valueOf(it)
-                    }.getOrNull()
-                } ?: ConnectionState.NOT_AUTHENTICATED
-            }
-
+            loadPersistedStates()
             refresh()
         }
     }
 
-    fun status(provider: ConnectionProvider): ConnectionStatus {
+    /**
+     * Returns the latest cached status.
+     * No process/network I/O is performed here.
+     */
+    fun status(provider: ConnectionProvider): ConnectionStatus =
+        _statuses.value.first { it.provider == provider }
+
+    /**
+     * Performs a fresh provider check in the background.
+     */
+    fun refreshAsync() {
+        scope.launch {
+            refresh()
+        }
+    }
+
+    /**
+     * Performs the real dependency/authentication check and returns
+     * the resulting state to the caller.
+     */
+    suspend fun connect(provider: ConnectionProvider): ConnectionStatus {
+        val result =
+            when (provider) {
+                ConnectionProvider.GITHUB -> {
+                    when {
+                        !github.isInstalled() ->
+                            ConnectionState.MISSING_DEPENDENCY
+
+                        !github.isAuthenticated() ->
+                            ConnectionState.NOT_AUTHENTICATED
+
+                        else ->
+                            ConnectionState.CONNECTED
+                    }
+                }
+
+                ConnectionProvider.GOOGLE_SHEETS -> {
+                    when {
+                        !googleSheets.isInstalled() ->
+                            ConnectionState.MISSING_DEPENDENCY
+
+                        !googleSheets.isAuthenticated() ->
+                            ConnectionState.NOT_AUTHENTICATED
+
+                        else ->
+                            ConnectionState.CONNECTED
+                    }
+                }
+            }
+
+        states[provider] = result
+        storage?.putString(key(provider), result.name)
+
+        refresh()
+
+        return status(provider)
+    }
+
+    fun disconnect(provider: ConnectionProvider): ConnectionStatus {
+        states[provider] = ConnectionState.DISCONNECTED
+
+        val disconnected =
+            ConnectionStatus(
+                provider = provider,
+                state = ConnectionState.DISCONNECTED,
+                message =
+                    "${provider.displayName} connection is disabled. " +
+                        "Reconnect from Connections & Skills.",
+            )
+
+        _statuses.value =
+            _statuses.value.map {
+                if (it.provider == provider) disconnected else it
+            }
+
+        scope.launch {
+            storage?.putString(
+                key(provider),
+                ConnectionState.DISCONNECTED.name,
+            )
+        }
+
+        return disconnected
+    }
+
+    fun isConnected(provider: ConnectionProvider): Boolean =
+        status(provider).state == ConnectionState.CONNECTED
+
+    fun github(): GitHubAdapter = github
+
+    fun googleSheets(): GoogleSheetsAdapter = googleSheets
+
+    fun dispose() {
+        scope.cancel()
+        states.clear()
+    }
+
+    private suspend fun loadPersistedStates() {
+        for (provider in ConnectionProvider.entries) {
+            val saved = storage?.getString(key(provider), null)
+
+            states[provider] =
+                saved?.let {
+                    runCatching {
+                        ConnectionState.valueOf(it)
+                    }.getOrNull()
+                } ?: ConnectionState.NOT_AUTHENTICATED
+        }
+    }
+
+    /**
+     * Called only from Dispatchers.IO.
+     */
+    private suspend fun refresh() {
+        val updated =
+            ConnectionProvider.entries.map { provider ->
+                inspect(provider)
+            }
+
+        _statuses.value = updated
+    }
+
+    private fun inspect(provider: ConnectionProvider): ConnectionStatus {
+        if (states[provider] == ConnectionState.DISCONNECTED) {
+            return ConnectionStatus(
+                provider,
+                ConnectionState.DISCONNECTED,
+                "${provider.displayName} connection is disabled. " +
+                    "Reconnect from Connections & Skills.",
+            )
+        }
+
         if (!available(provider.executable)) {
             return ConnectionStatus(
                 provider,
@@ -53,91 +179,49 @@ class ConnectionRegistry(
 
         return when (provider) {
             ConnectionProvider.GITHUB -> {
-                when {
-                    states[provider] == ConnectionState.DISCONNECTED ->
-                        ConnectionStatus(
-                            provider,
-                            ConnectionState.DISCONNECTED,
-                            "GitHub connection is disabled. Reconnect from Connections & Skills.",
-                        )
-
-                    !github.isAuthenticated() ->
-                        ConnectionStatus(
-                            provider,
-                            ConnectionState.NOT_AUTHENTICATED,
-                            "GitHub CLI is installed but not authenticated. Run `gh auth login`.",
-                        )
-
-                    else ->
-                        ConnectionStatus(
-                            provider,
-                            ConnectionState.CONNECTED,
-                            "GitHub CLI authentication is active.",
-                        )
+                if (!github.isAuthenticated()) {
+                    ConnectionStatus(
+                        provider,
+                        ConnectionState.NOT_AUTHENTICATED,
+                        "GitHub CLI is installed but not authenticated. " +
+                            "Run `gh auth login`.",
+                    )
+                } else {
+                    ConnectionStatus(
+                        provider,
+                        ConnectionState.CONNECTED,
+                        "GitHub CLI authentication is active.",
+                    )
                 }
             }
 
-            ConnectionProvider.GOOGLE_SHEETS ->
-                ConnectionStatus(
-                    provider,
-                    states[provider] ?: ConnectionState.NOT_AUTHENTICATED,
-                    message(states[provider] ?: ConnectionState.NOT_AUTHENTICATED),
-                )
-        }
-    }
-
-    fun connect(provider: ConnectionProvider): ConnectionStatus {
-        if (provider == ConnectionProvider.GITHUB) {
-            if (!github.isInstalled()) {
-                return status(provider)
-            }
-
-            if (!github.isAuthenticated()) {
-                return status(provider)
+            ConnectionProvider.GOOGLE_SHEETS -> {
+                if (!googleSheets.isAuthenticated()) {
+                    ConnectionStatus(
+                        provider,
+                        ConnectionState.NOT_AUTHENTICATED,
+                        "Google Workspace CLI is installed but not authenticated. " +
+                            "Run `gws auth login`.",
+                    )
+                } else {
+                    ConnectionStatus(
+                        provider,
+                        ConnectionState.CONNECTED,
+                        "Google Workspace CLI authentication is active.",
+                    )
+                }
             }
         }
-
-        states[provider] = ConnectionState.CONNECTED
-        persist(provider, ConnectionState.CONNECTED)
-        refresh()
-
-        return status(provider)
     }
 
-    fun disconnect(provider: ConnectionProvider): ConnectionStatus {
-        states[provider] = ConnectionState.DISCONNECTED
-        persist(provider, ConnectionState.DISCONNECTED)
-        refresh()
-
-        return status(provider)
-    }
-
-    fun isConnected(provider: ConnectionProvider): Boolean =
-        status(provider).state == ConnectionState.CONNECTED
-
-    fun github(): GitHubAdapter = github
-
-    fun dispose() {
-        scope.cancel()
-        states.clear()
-    }
-
-    private fun persist(
+    private fun initialStatus(
         provider: ConnectionProvider,
-        state: ConnectionState,
-    ) {
-        scope.launch {
-            storage?.putString(key(provider), state.name)
-        }
-    }
-
-    private fun refresh() {
-        _statuses.value =
-            ConnectionProvider.entries.map { status(it) }
-    }
-
-    private fun key(provider: ConnectionProvider): String =
-        "connection.${provider.id}.state"
+    ): ConnectionStatus =
+        ConnectionStatus(
+            provider = provider,
+            state = ConnectionState.NOT_AUTHENTICATED,
+            message = "Checking ${provider.displayName} connection...",
+        )
 
     private fun available(name: String): Boolean {
         val dirs =
@@ -162,24 +246,6 @@ class ConnectionRegistry(
         }
     }
 
-    private fun message(state: ConnectionState): String =
-        when (state) {
-            ConnectionState.AVAILABLE ->
-                "Provider is available."
-
-            ConnectionState.MISSING_DEPENDENCY ->
-                "Required dependency is missing."
-
-            ConnectionState.NOT_AUTHENTICATED ->
-                "Authentication has not been established."
-
-            ConnectionState.CONNECTED ->
-                "Connection is active."
-
-            ConnectionState.DISCONNECTED ->
-                "Connection is explicitly disconnected."
-
-            ConnectionState.ERROR ->
-                "Connection reported an error."
-        }
+    private fun key(provider: ConnectionProvider): String =
+        "connection.${provider.id}.state"
 }

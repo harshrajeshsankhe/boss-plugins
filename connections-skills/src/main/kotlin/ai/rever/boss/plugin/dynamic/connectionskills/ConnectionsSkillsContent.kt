@@ -14,51 +14,172 @@ import androidx.compose.material.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 
 @Composable
 fun ConnectionsSkillsContent(registry: ConnectionRegistry) {
+    val skillLoader = SkillLoader()
     val statuses by registry.statuses.collectAsState()
+    val scope = rememberCoroutineScope()
 
     LazyColumn(
         modifier = Modifier.padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("Connections & Skills", style = MaterialTheme.typography.h5)
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
-                    "Governed external-service connections and version-pinned agent skills.",
+                    "Connections & Skills",
+                    style = MaterialTheme.typography.h5,
+                )
+                Text(
+                    "Connect external services and expose governed, version-pinned capabilities to BOSS agents.",
                     style = MaterialTheme.typography.body1,
                 )
             }
         }
 
-        items(statuses) { status ->
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(status.provider.displayName, style = MaterialTheme.typography.h6)
-                    Text("Dependency: ${status.provider.executable}")
-                    Text("State: ${status.state.name.lowercase()}")
-                    Text(status.message)
+        item {
+            Text(
+                "Connections",
+                style = MaterialTheme.typography.h6,
+            )
+        }
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (status.state == ConnectionState.CONNECTED) {
-                            Button(onClick = { registry.disconnect(status.provider) }) {
-                                Text("Disconnect")
-                            }
-                        } else {
-                            Button(onClick = { registry.connect(status.provider) }) {
-                                Text("Connect")
-                            }
+        items(statuses) { status ->
+            ConnectionCard(
+                status = status,
+                registry = registry,
+                onConnect = {
+                    scope.launch {
+                        registry.connect(status.provider)
+                    }
+                },
+            )
+        }
+
+        item {
+            Text(
+                "Skills Catalogue",
+                style = MaterialTheme.typography.h6,
+            )
+        }
+
+        items(SkillCatalog.skills) { skill ->
+            SkillCard(
+                skill = skill,
+                connected = registry.isConnected(skill.provider),
+                loaded = skillLoader.load(skill) != null,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConnectionCard(
+    status: ConnectionStatus,
+    registry: ConnectionRegistry,
+    onConnect: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                status.provider.displayName,
+                style = MaterialTheme.typography.h6,
+            )
+
+            Text("Dependency: ${status.provider.executable}")
+            Text("State: ${status.state.name.lowercase()}")
+            Text(status.message)
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                when (status.state) {
+                    ConnectionState.CONNECTED -> {
+                        Button(
+                            onClick = {
+                                registry.disconnect(status.provider)
+                            },
+                        ) {
+                            Text("Disconnect")
+                        }
+                    }
+
+                    ConnectionState.MISSING_DEPENDENCY,
+                    ConnectionState.NOT_AUTHENTICATED,
+                    ConnectionState.ERROR,
+                    ConnectionState.AVAILABLE,
+                    ConnectionState.DISCONNECTED -> {
+                        Button(
+                            enabled = status.state != ConnectionState.MISSING_DEPENDENCY &&
+                                status.state != ConnectionState.NOT_AUTHENTICATED,
+                            onClick = {
+                                onConnect()
+                            },
+                        ) {
+                            Text("Connect")
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SkillCard(
+    skill: SkillDefinition,
+    connected: Boolean,
+    loaded: Boolean,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    skill.name,
+                    style = MaterialTheme.typography.h6,
+                )
+                Text("v${skill.version}")
+            }
+
+            Text(skill.description)
+
+            Text(
+                "Provider: ${skill.provider.displayName}",
+            )
+
+            Text(
+                "Capabilities: ${skill.capabilities.joinToString(" • ")}",
+            )
+
+            Text(
+                if (connected) {
+                    "Available to connected workflows"
+                } else {
+                    "Requires an active connection"
+                },
+            )
+
+            Text(
+                if (loaded) {
+                    "SKILL.md: loaded"
+                } else {
+                    "SKILL.md: unavailable"
+                },
+            )
         }
     }
 }

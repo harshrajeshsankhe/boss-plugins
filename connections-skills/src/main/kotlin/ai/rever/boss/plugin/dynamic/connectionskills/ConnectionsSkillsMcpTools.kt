@@ -8,8 +8,6 @@ class ConnectionsSkillsMcpTools(
     private val registry: ConnectionRegistry,
 ) : McpToolProvider {
 
-    private val googleSheets = GoogleSheetsAdapter()
-
     override val providerId = "connections-skills"
 
     override fun tools(): List<McpToolDefinition> =
@@ -103,7 +101,20 @@ class ConnectionsSkillsMcpTools(
                     )
                 },
                 inputSchema =
-                    """{"type":"object","properties":{"spreadsheetId":{"type":"string"},"range":{"type":"string"},"valuesJson":{"type":"string","description":"JSON ValueRange body, for example {"values":[["Name","Score"],["Harsh",100]]}"},"valueInputOption":{"type":"string","enum":["RAW","USER_ENTERED"]}},"required":["spreadsheetId","range","valuesJson"]}""",
+                    """{"type":"object","properties":{"spreadsheetId":{"type":"string"},"range":{"type":"string"},"valuesJson":{"type":"string","description":"JSON ValueRange body containing the values matrix to write."},"valueInputOption":{"type":"string","enum":["RAW","USER_ENTERED"]}},"required":["spreadsheetId","range","valuesJson"]}""",
+                readOnly = false,
+                requiredPermissions = listOf("connections.write"),
+            ),
+
+            McpToolDefinition.withRbac(
+                name = "mcp__ai_rever_boss_plugin_dynamic_connectionskills__connect",
+                description =
+                    "Verify the provider dependency and authentication state, then activate the connection.",
+                handler = { args ->
+                    connect(args.string("provider"))
+                },
+                inputSchema =
+                    """{"type":"object","properties":{"provider":{"type":"string","enum":["github","google-sheets"]}},"required":["provider"]}""",
                 readOnly = false,
                 requiredPermissions = listOf("connections.write"),
             ),
@@ -125,36 +136,9 @@ class ConnectionsSkillsMcpTools(
     private fun googleSheetsStatus(): McpToolResult {
         val status = registry.status(ConnectionProvider.GOOGLE_SHEETS)
 
-        val authStatus = if (googleSheets.isInstalled()) {
-            googleSheets.isAuthenticated()
-        } else {
-            false
-        }
-
-        val message = when {
-            !googleSheets.isInstalled() ->
-                "Google Workspace CLI (gws) is not installed."
-
-            !authStatus ->
-                "gws is installed but Google authentication is not configured."
-
-            status.state == ConnectionState.DISCONNECTED ->
-                "Google Sheets connection is explicitly disconnected."
-
-            else ->
-                "Google Workspace CLI is installed and authenticated."
-        }
-
-        val state = when {
-            !googleSheets.isInstalled() -> ConnectionState.MISSING_DEPENDENCY
-            status.state == ConnectionState.DISCONNECTED -> ConnectionState.DISCONNECTED
-            !authStatus -> ConnectionState.NOT_AUTHENTICATED
-            else -> ConnectionState.CONNECTED
-        }
-
         return McpToolResult(
-            """{"provider":"google-sheets","displayName":"Google Sheets","state":"${state.name.lowercase()}","message":"${escape(message)}"}""",
-            state == ConnectionState.ERROR,
+            json(status),
+            status.state == ConnectionState.ERROR,
         )
     }
 
@@ -173,7 +157,7 @@ class ConnectionsSkillsMcpTools(
             return McpToolResult("spreadsheetId and range are required.", true)
         }
 
-        val result = googleSheets.readValues(spreadsheetId, range)
+        val result = registry.googleSheets().readValues(spreadsheetId, range)
 
         return McpToolResult(
             result.output.ifBlank { "gws returned no output." },
@@ -205,7 +189,7 @@ class ConnectionsSkillsMcpTools(
             )
         }
 
-        val result = googleSheets.writeValues(
+        val result = registry.googleSheets().writeValues(
             spreadsheetId,
             range,
             valuesJson,
@@ -293,6 +277,22 @@ class ConnectionsSkillsMcpTools(
                 "GitHub CLI returned no output."
             },
             !result.success,
+        )
+    }
+
+    private suspend fun connect(value: String?): McpToolResult {
+        val provider =
+            provider(value)
+                ?: return McpToolResult(
+                    "Unsupported provider.",
+                    true,
+                )
+
+        val status = registry.connect(provider)
+
+        return McpToolResult(
+            json(status),
+            status.state == ConnectionState.ERROR,
         )
     }
 
