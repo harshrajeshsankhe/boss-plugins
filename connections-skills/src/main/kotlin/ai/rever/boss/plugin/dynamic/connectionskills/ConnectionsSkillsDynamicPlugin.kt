@@ -11,7 +11,7 @@ class ConnectionsSkillsDynamicPlugin : DynamicPlugin {
         "Unified catalogue and governed access layer for external service connections and version-pinned skills."
     override val author = "TechTribe"
     override val url =
-        "https://github.com/risa-labs-inc/boss-plugin-connections-skills"
+        "https://github.com/risa-labs-inc/boss-plugins/tree/main/connections-skills"
 
     private var registered = false
     private var panelRegistry: ai.rever.boss.plugin.api.PanelRegistry? = null
