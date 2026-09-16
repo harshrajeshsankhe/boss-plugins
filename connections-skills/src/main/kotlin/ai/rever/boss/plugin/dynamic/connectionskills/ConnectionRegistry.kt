@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
@@ -37,16 +38,9 @@ class ConnectionRegistry(
         }
     }
 
-    /**
-     * Returns the latest cached status.
-     * No process/network I/O is performed here.
-     */
     fun status(provider: ConnectionProvider): ConnectionStatus =
         _statuses.value.first { it.provider == provider }
 
-    /**
-     * Performs a fresh provider check in the background.
-     */
     fun refreshAsync() {
         scope.launch {
             refresh()
@@ -54,50 +48,51 @@ class ConnectionRegistry(
     }
 
     /**
-     * Performs the real dependency/authentication check and returns
-     * the resulting state to the caller.
+     * Checks dependency and authentication state.
+     *
+     * Provider CLI calls are explicitly dispatched to IO so this method
+     * remains safe even when called from a UI coroutine.
      */
-    suspend fun connect(provider: ConnectionProvider): ConnectionStatus {
-        val result =
-            when (provider) {
-                ConnectionProvider.GITHUB -> {
-                    when {
-                        !github.isInstalled() ->
-                            ConnectionState.MISSING_DEPENDENCY
+    suspend fun connect(provider: ConnectionProvider): ConnectionStatus =
+        withContext(Dispatchers.IO) {
+            val result =
+                when (provider) {
+                    ConnectionProvider.GITHUB -> {
+                        when {
+                            !github.isInstalled() ->
+                                ConnectionState.MISSING_DEPENDENCY
 
-                        !github.isAuthenticated() ->
-                            ConnectionState.NOT_AUTHENTICATED
+                            !github.isAuthenticated() ->
+                                ConnectionState.NOT_AUTHENTICATED
 
-                        else ->
-                            ConnectionState.CONNECTED
+                            else ->
+                                ConnectionState.CONNECTED
+                        }
+                    }
+
+                    ConnectionProvider.GOOGLE_SHEETS -> {
+                        when {
+                            !googleSheets.isInstalled() ->
+                                ConnectionState.MISSING_DEPENDENCY
+
+                            !googleSheets.isAuthenticated() ->
+                                ConnectionState.NOT_AUTHENTICATED
+
+                            else ->
+                                ConnectionState.CONNECTED
+                        }
                     }
                 }
 
-                ConnectionProvider.GOOGLE_SHEETS -> {
-                    when {
-                        !googleSheets.isInstalled() ->
-                            ConnectionState.MISSING_DEPENDENCY
+            states[provider] = result
+            storage?.putString(key(provider), result.name)
 
-                        !googleSheets.isAuthenticated() ->
-                            ConnectionState.NOT_AUTHENTICATED
+            refresh()
 
-                        else ->
-                            ConnectionState.CONNECTED
-                    }
-                }
-            }
-
-        states[provider] = result
-        storage?.putString(key(provider), result.name)
-
-        refresh()
-
-        return status(provider)
-    }
+            status(provider)
+        }
 
     fun disconnect(provider: ConnectionProvider): ConnectionStatus {
-        states[provider] = ConnectionState.DISCONNECTED
-
         val disconnected =
             ConnectionStatus(
                 provider = provider,
@@ -106,6 +101,8 @@ class ConnectionRegistry(
                     "${provider.displayName} connection is disabled. " +
                         "Reconnect from Connections & Skills.",
             )
+
+        states[provider] = ConnectionState.DISCONNECTED
 
         _statuses.value =
             _statuses.value.map {
@@ -148,7 +145,7 @@ class ConnectionRegistry(
     }
 
     /**
-     * Called only from Dispatchers.IO.
+     * Runs exclusively on the registry IO scope.
      */
     private suspend fun refresh() {
         val updated =

@@ -1,6 +1,5 @@
 package ai.rever.boss.plugin.dynamic.connectionskills
 
-import java.io.File
 import java.util.concurrent.TimeUnit
 
 class GoogleSheetsAdapter {
@@ -23,18 +22,19 @@ class GoogleSheetsAdapter {
     }
 
     internal fun isAuthenticatedStatus(output: String): Boolean {
-        val authMethodNone =
-            Regex("""\"auth_method\"\s*:\s*\"none\"""").containsMatchIn(output)
+        val normalized = output.lowercase()
 
-        val credentialSourceNone =
-            Regex("""\"credential_source\"\s*:\s*\"none\"""").containsMatchIn(output)
+        if (normalized.contains("\"auth_method\": \"none\"") ||
+            normalized.contains("\"credential_source\": \"none\"")
+        ) {
+            return false
+        }
 
-        val credentialExists =
-            Regex("""\"encrypted_credentials_exists\"\s*:\s*true""").containsMatchIn(output) ||
-                Regex("""\"plain_credentials_exists\"\s*:\s*true""").containsMatchIn(output) ||
-                Regex("""\"token_cache_exists\"\s*:\s*true""").containsMatchIn(output)
-
-        return !authMethodNone && !credentialSourceNone && credentialExists
+        return normalized.contains("\"encrypted_credentials_exists\": true") ||
+            normalized.contains("\"plain_credentials_exists\": true") ||
+            normalized.contains("\"token_cache_exists\": true") ||
+            normalized.contains("\"auth_method\": \"oauth\"") ||
+            normalized.contains("\"auth_method\": \"adc\"")
     }
 
     fun readValues(
@@ -83,8 +83,8 @@ class GoogleSheetsAdapter {
             "spreadsheetId" to spreadsheetId,
             "range" to range,
             "valueInputOption" to valueInputOption,
-            "includeValuesInResponse" to "true",
-        )
+        ).dropLast(1) +
+            ",\"includeValuesInResponse\":true}"
 
         return run(
             "gws", "sheets", "spreadsheets", "values", "update",

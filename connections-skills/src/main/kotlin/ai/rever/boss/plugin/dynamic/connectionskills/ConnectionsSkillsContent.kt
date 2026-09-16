@@ -39,6 +39,16 @@ fun ConnectionsSkillsContent(registry: ConnectionRegistry) {
                     "Connect external services and expose governed, version-pinned capabilities to BOSS agents.",
                     style = MaterialTheme.typography.body1,
                 )
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Button(
+                        onClick = registry::refreshAsync,
+                    ) {
+                        Text("Refresh")
+                    }
+                }
             }
         }
 
@@ -112,19 +122,29 @@ private fun ConnectionCard(
                         }
                     }
 
-                    ConnectionState.MISSING_DEPENDENCY,
-                    ConnectionState.NOT_AUTHENTICATED,
-                    ConnectionState.ERROR,
-                    ConnectionState.AVAILABLE,
-                    ConnectionState.DISCONNECTED -> {
+                    ConnectionState.MISSING_DEPENDENCY -> {
                         Button(
-                            enabled = status.state != ConnectionState.MISSING_DEPENDENCY &&
-                                status.state != ConnectionState.NOT_AUTHENTICATED,
-                            onClick = {
-                                onConnect()
-                            },
+                            enabled = false,
+                            onClick = {},
                         ) {
-                            Text("Connect")
+                            Text("Install dependency")
+                        }
+                    }
+
+                    ConnectionState.NOT_AUTHENTICATED,
+                    ConnectionState.DISCONNECTED,
+                    ConnectionState.ERROR,
+                    ConnectionState.AVAILABLE -> {
+                        Button(
+                            onClick = onConnect,
+                        ) {
+                            Text(
+                                if (status.state == ConnectionState.NOT_AUTHENTICATED) {
+                                    "Connect"
+                                } else {
+                                    "Reconnect"
+                                },
+                            )
                         }
                     }
                 }

@@ -53,6 +53,20 @@ class GitHubAdapter {
             )
         }
 
+        if (title.length > 200) {
+            return Result(
+                2,
+                "Issue title must be at most 200 characters.",
+            )
+        }
+
+        if (body.length > 20_000) {
+            return Result(
+                2,
+                "Issue body must be at most 20000 characters.",
+            )
+        }
+
         return run(
             "gh",
             "issue",
@@ -60,9 +74,9 @@ class GitHubAdapter {
             "--repo",
             repository,
             "--title",
-            title.take(200),
+            title,
             "--body",
-            body.take(20_000),
+            body,
             timeoutSec = 60,
         )
     }
